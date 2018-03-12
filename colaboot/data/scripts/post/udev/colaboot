@@ -1,0 +1,363 @@
+#!/bin/sh -e
+
+. /scripts/functions
+
+get_mnf_param() {
+	PARAM_NAME=$1
+	MNF_FILE=$2
+
+	# looking for parameter in config-like file and return it's value.
+	grep -i "^${PARAM_NAME}=" $MNF_FILE |sed -r -e 's/^[^=]*=//'
+}
+
+expand_macro() {
+	# Only one {macros} per line please!
+	# currently supported - 
+	# {inherit} - expand into 'dirname'-part of ROOT= boot parameter's URI.
+	# {DHCP_*} - any DHCP variable which you can find in a dump file, making by dhcpcd -U
+	# e.g. {DHCP_dhcp_server_identifier}, {DHCP_ip_address}
+
+	STR=$1
+	if echo $STR | grep -q '{'; then
+		MACRO_NAME=$(echo $STR | sed -e 's/.*{//' -e 's/}.*//')
+
+		REPLACEMENT=
+		if [ "$MACRO_NAME" = "inherit" ]; then
+			REPLACEMENT=$(echo $ROOT |sed -r -e 's|(.*)/.*|\1|')
+		elif echo $MACRO_NAME |grep -q "^DHCP_"; then
+			# for this macro type we need to make sure first that network is up
+			[ -z "$NETWORK_IS_UP" ] && network_init >&2
+			DHCP_OPT_NAME=$(echo $MACRO_NAME |sed -e 's/^DHCP_//')
+			REPLACEMENT=$(get_mnf_param $DHCP_OPT_NAME /tmp/lease-info |sed -e "s/'//g")
+		fi
+		STR=$(echo $STR |sed -e "s|{.*}|$REPLACEMENT|")
+	fi
+	echo $STR
+}
+
+set_image_location() {
+	URI=$1
+	
+	if echo $URI | grep -q "^file:"; then
+		# image is available locally, we can mount it directly (depends on force caching option)
+		# file:/// URI should contain device, which will be mounted.
+		# e.g. file:///sr0/my.manifest
+		IMAGE_AVAILABLE_LOCALLY=1
+
+		# extract device part and mount it
+		IMG_DEV=$(echo $URI |sed -e 's|.*:///||' -e 's|/.*||')
+		mount_img_fs $IMG_DEV
+
+		# path where device mounted
+		CURRENT_IMAGE_FS="${IMG_FS_PATH}/$IMG_DEV"
+
+		# modified URI, where device replaced to mountpoint
+		CURRENT_IMAGE_LOCATION=$(echo $URI |sed -e "s|/${IMG_DEV}|${CURRENT_IMAGE_FS}|")
+	else
+		# we need to download image first
+		IMAGE_AVAILABLE_LOCALLY=0
+		[ -z "$NETWORK_IS_UP" ] && network_init
+		CURRENT_IMAGE_LOCATION=$URI
+	fi
+
+
+	if [ $IMAGE_AVAILABLE_LOCALLY -eq 1 -a $FORCE_CACHE_IMAGES -eq 0 ]; then
+		# layer images will be mounted directly from their location
+		CACHE_IMAGE=0
+		IMAGES_PATH=$CURRENT_IMAGE_FS
+	else
+		# layer images will be downloaded first
+		CACHE_IMAGE=1
+		IMAGES_PATH=$CACHED_IMAGES
+	fi
+}
+
+mount_img_fs() {
+	local IMG_DEV="/dev/$1"
+	IMG_MPOINT="${IMG_FS_PATH}/$1"
+
+	if [ ! -d "$IMG_MPOINT" ]; then
+		try=0
+		while [ "$try" -lt $((${WAIT_DELAY}*10)) ]; do
+			try=$(($try+1))
+			[ -r $IMG_DEV ] && break
+			debug "Waiting for device ${IMG_DEV}... $try"
+			sleep .1
+		done
+		[ -r ${IMG_DEV} ] || error "Can't locate images device ${IMG_DEV}"
+		mkdir -p $IMG_MPOINT
+		mount ${IMG_DEV} $IMG_MPOINT || error "Can't mount images filesystem on ${IMG_DEV}"
+	fi
+}
+
+
+get_image() {
+	# $1 - URI of image to download;
+	# $2 - where to save it (or image already should be in this location if we'll just mount it)
+	if [ $CACHE_IMAGE -eq 1 ]; then
+		curl -f $curlopts "$1" -o "$2"
+		if ! [ $? -eq 0 -a -f "$2" ]; then
+			if [ -z "$OPTIONAL" ]; then
+				shell "Can't get image from '$1'"
+			else
+				error "Warning: Can't get optional image from '$1'"
+			fi
+		fi
+	else
+		if ! [ -f $2 ]; then
+			if [ -z "$OPTIONAL" ]; then 
+				shell "No image found at $2"
+			else
+				error "Warning: no optional image found at $2"
+			fi
+		fi
+	fi
+}
+
+prepare_resolver_chroot() {
+	mkdir -p /var/resolv/etc
+	mkdir -p /var/resolv/var/nis
+	mkdir -p /var/resolv/var/yp/binding
+	mkdir -p /var/resolv/lib64
+
+	for etc_file in host.conf hosts localtime nsswitch.conf resolv.conf services; do
+		[ -f /etc/$etc_file ] && ln /etc/$etc_file /var/resolv/etc/
+	done
+
+	LIBD=/lib64
+	for lib in libnss_dns.so.2 libnss_files.so.2 libresolv.so.2 ; do
+		real_lib=`readlink -e ${LIBD}/${lib}`
+		[ -n "$real_lib" ] && ln $real_lib /var/resolv/lib64/$lib
+	done
+}
+
+
+network_init() {
+	if [ -s /tmp/lease-info ]; then
+		# It seems network is already up
+		NETWORK_IS_UP=1
+		return
+	fi
+
+	mkdir -p /var/lib/dhcpcd
+
+	try=0
+	message "CoLaBoot: configure network by DHCP"
+	while [ "$try" -lt $((${WAIT_DELAY} * 10)) ]; do
+		try=$(($try+1))
+		debug "attempt #$try"
+		ls /sys/class/net |grep -vq "^lo$" || {
+			debug "no network interfaces detected"
+			sleep .1
+			continue
+		}
+		ls /sys/class/net | while read i; do
+			[ "$i" = lo ] && continue
+		
+			# Boot parameter clb_use_iface= allow to use for boot specific network interface, ignoring all other.
+			if [ -n "$clb_use_iface" ]; then
+				if [ "$clb_use_iface" != "$i" ]; then
+					verbose "CoLaBoot: skip interface $i due clb_use_iface=$clb_use_iface"
+					continue
+				fi
+			fi
+
+			verbose "CoLaBoot: probing interface $i"
+			ip -o link show "$i" | sed -e 's/.*<//' -e 's/>.*//' |grep -q ",UP" || {
+				ip link set "$i" up
+				for delay in $(seq 1 100);  do 
+					if ip -o link show "$i" | sed -e 's/.*<//' -e 's/>.*//' |grep -q "NO-CARRIER"; then
+						debug "Wait for carrier... $delay"
+						sleep .1
+					else
+						break
+					fi
+				done
+			}
+			if ip -o link show "$i" | sed -e 's/.*<//' -e 's/>.*//' |grep -q "NO-CARRIER"; then
+				verbose "$i: carrier not detected, skip"
+			else
+				message "Aquire IP address on $i:"
+				dhcpcd -p -w -t 30 "$i"
+			fi
+		done
+		verbose "Hope to find assigned address, looking..."
+		if ip -o -4 addr list |grep -Fqv "inet 127.0.0.1"; then
+			break
+		fi
+		sleep .1
+	done
+
+	if ip -o -4 addr list |grep -Fqv "inet 127.0.0.1"; then 
+		verbose "Save lease info into /tmp/lease-info"
+		for lease in /var/lib/dhcpcd/*.lease; do
+			iface=$(basename $lease |sed -e 's/dhcpcd-//' -e 's/\.lease$//')
+			dhcpcd -4 -U $iface > /tmp/lease-info
+		done
+		NETWORK_IS_UP=1
+	else
+		error "No assigned IP found. Network problem?"
+	fi
+}
+
+network_down() {
+	ls /sys/class/net | while read i; do
+		[ "$i" = "lo" ] && continue
+		ip -o link show dev $i |grep -q ",UP" || continue
+		message "CoLaBoot: downing interface $i"
+		ipaddr="$(ip addr list "$i" | sed -n 's,^[[:space:]]\+inet[[:space:]]\+\([.0-9]\+/[0-9]\+\).*,\1,p')"
+		ip addr del "${ipaddr}" dev "$i"
+		ip link set "$i" down
+	done
+}
+
+
+
+prepare() {
+	[ -d /dev/fd ] || ln -snf /proc/self/fd /dev/fd
+	[ -e /dev/stdin ] || ln -snf /proc/self/fd/0 /dev/stdin
+	[ -e /dev/stdout ] || ln -snf /proc/self/fd/1 /dev/stdout
+	[ -e /dev/stderr ] || ln -snf /proc/self/fd/2 /dev/stderr
+
+	# default size for our tmpfs 
+	[ -n "$clb_fs_size" ] || clb_fs_size=2G
+
+	# by default we will download images in memory, even they accessible locally
+	FORCE_CACHE_IMAGES=${clb_force_cache_images:-1}
+	WAIT_DELAY=${ROOTDELAY:-180}
+
+	verbose "CoLaBoot: root url=${ROOT}, clb_fs_size=${clb_fs_size}, clb_force_cache_images=${FORCE_CACHE_IMAGES}"
+
+	RDISK=/tmp/clb-ramdisk
+	CACHED_IMAGES=$RDISK/cached-images
+	IMAGES_MPOINTS=$RDISK/mount-points
+	IMG_FS_PATH=/tmp/images-fs
+
+	# this location can be overrided for local HDD, NFS or iSCSI
+	RW_LAYER_PATH=$IMAGES_MPOINTS
+
+	mkdir -p $RDISK
+	mount -t tmpfs -o mode=0755,size="$clb_fs_size" tmpfs $RDISK
+	mkdir -p $CACHED_IMAGES
+	mkdir -p $IMAGES_MPOINTS
+	mkdir -p $IMG_FS_PATH
+
+	NETWORK_IS_UP=
+	CURRENT_IMAGE_LOCATION=
+
+	prepare_resolver_chroot
+
+	# forcibly load some modules, specified in boot parameter clb_load_modules= (delimited by comma)
+	if [ -n "$clb_load_modules" ]; then
+		for M in $(echo $clb_load_modules |sed -e 's/,/ /g'); do
+			verbose "CoLaBoot: load module $M"
+			modprobe $M
+		done
+	fi
+}
+
+get_root_images() {
+	# process ROOT= boot parameter. It can be the only layer image to mount,
+	# or .manifest file with description which layer images should be downloaded and mounted
+	ROOT=$(expand_macro $ROOT)
+	set_image_location $ROOT
+
+	if echo "$ROOT" | grep -q '\.manifest'; then
+		MNF="${IMAGES_PATH}/$(basename $ROOT)"
+		message "CoLaBoot: fetching manifest from '$CURRENT_IMAGE_LOCATION'"
+		get_image "$CURRENT_IMAGE_LOCATION" "$MNF"
+
+		# Looking for BASE= parameter in manifest. If set, it contain default path for all other layers.
+		BASE=$(get_mnf_param BASE $MNF |sed -e 's|/$||')
+		BASE=$(expand_macro $BASE)
+
+		# Looking for FORCE_CACHE_IMAGES= parameter in manifest.
+		# If specified boot parameter clb_force_cache_images=, it will override this parameter from manifest
+		MNF_FORCE_CACHE_IMAGES=$(get_mnf_param FORCE_CACHE_IMAGES $MNF)
+		if [ -z "${clb_force_cache_images}" -a -n "${MNF_FORCE_CACHE_IMAGES}" ]; then
+			FORCE_CACHE_IMAGES=$MNF_FORCE_CACHE_IMAGES
+		fi
+
+		L_COUNT=0
+		LOWER_DIRS=
+
+		# get all LAYER= parameters from manifest
+		LAYERS=$(get_mnf_param LAYER $MNF)
+		for L_URI in $LAYERS; do
+			# Normally if we can't load/mount some layer image, boot process will stop with error.
+			# But there are may be a special magic prefix "OPTIONAL:" before layer's name/URI.
+			# Absence of OPTIONAL image will be ignored with a warning, and root FS will be mounted
+			# without this image in chain.
+			OPTIONAL=
+			if echo $L_URI | grep -q '^OPTIONAL:' ; then
+				L_URI=$(echo $L_URI | sed -e 's/^OPTIONAL://')
+				OPTIONAL=1
+			fi
+
+			L_URI=$(expand_macro $L_URI)
+			L_COUNT=$(($L_COUNT + 1))
+			LAYER="$(basename $L_URI)"
+
+			# if LAYER= contain just image name (not full URI), then we'll add BASE= part to it.
+			[ "$L_URI" = "$LAYER" ] && L_URI="${BASE}/${LAYER}"
+
+			set_image_location "$L_URI"
+			verbose "CoLaBoot: fetching layer $LAYER from '$CURRENT_IMAGE_LOCATION'"
+
+			LAYER="${IMAGES_PATH}/${LAYER}"
+
+			get_image "$CURRENT_IMAGE_LOCATION" "$LAYER"
+
+			if [ -f $LAYER ]; then
+				# if layer's image exists after all, then make mountpoint and mount it.
+				CUR_L="layer${L_COUNT}"
+				ln -s $LAYER ${IMAGES_MPOINTS}/$CUR_L
+				mkdir ${IMAGES_MPOINTS}/.${CUR_L}
+				mount -t squashfs ${IMAGES_MPOINTS}/${CUR_L} ${IMAGES_MPOINTS}/.${CUR_L}
+			fi
+		done 
+	else
+		# there single rootfs image in ROOT= parameter.
+		message "CoLaBoot: fetching root image from '$CURRENT_IMAGE_LOCATION'"
+		get_image "$CURRENT_IMAGE_LOCATION" "${IMAGES_PATH}/$(basename $ROOT)"
+
+		ln -s ${IMAGES_PATH}/$(basename $ROOT) ${IMAGES_MPOINTS}/layer1
+		mkdir ${IMAGES_MPOINTS}/.layer1
+		mount -t squashfs ${IMAGES_MPOINTS}/layer1 ${IMAGES_MPOINTS}/.layer1
+	fi
+}
+
+
+mount_root_fs() {
+	# create overlayfs' RW (UpperDir) and .work directories on tmpfs
+	OVRL_RW_DIR=${RW_LAYER_PATH}/.rw
+	OVRL_WORK_DIR=${RW_LAYER_PATH}/.work
+	mkdir -p $OVRL_RW_DIR $OVRL_WORK_DIR
+
+	# get chain of all LowerDirs
+	LOWER_DIRS=$(ls -dr ${IMAGES_MPOINTS}/.layer* |while read L; do echo -n ${L}: ; done |sed -e 's/:$//')
+	MNT_CMD="mount -t overlay overlay -o lowerdir=${LOWER_DIRS},upperdir=${OVRL_RW_DIR},workdir=${OVRL_WORK_DIR} /root"
+	message "CoLaBoot: Mounting /root filesystem"
+	debug "with a command: $MNT_CMD"
+	$MNT_CMD || shell "Error mount /root filesystem"
+}
+
+cleanup() {
+	# Unmount our tmpfs and all other mountpoints in lazy mode
+	umount -l $RDISK
+
+	for MPOINT in $IMG_FS_PATH/*; do
+		grep -q " $MPOINT " /proc/mounts && umount -l $MPOINT
+	done
+
+	[ -n "$NETWORK_IS_UP" -o -s /tmp/lease-info ] && network_down
+}
+
+# =========< start here >=============
+
+prepare
+
+get_root_images
+mount_root_fs
+
+cleanup
