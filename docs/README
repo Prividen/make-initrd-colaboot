@@ -1,0 +1,46 @@
+CoLaBoot (Compressed Layers Boot) is a boot system that allow you to mount root
+FS as OverlayFS from a separate layers, each of them is compressed squashfs image.
+
+Layers can be aquired from network (HTTP(S)/FTP/TFTP/... any proto supported by
+curl(1)), or from local filesystems (ISO/HDD). 
+
+Multiple layer's locations supported, some of the layers may be optional for boot.
+Layers placed on the local filesystems may be mounted directly, to avoid caching in
+memory.
+
+Kernel modules, required for boot (e.g. network modules) may be added to initrd
+or provided as a separate initramfs image. All other modules may be provided as
+one of the layers.
+
+List of layers, arranged by boot order, with a some optional parameters described
+in a text .manifest file (see examples).
+
+
+
+Supported boot parameters:
+root= - location of .manifest file, OR the only layer to boot. Examples:
+	http://my.boot.server/path/my.manifest
+	file:///sr0/isolinux/rootfs.squashfs
+
+rootdelay= - maximum delay in seconds for many wait actions, such as wait for network
+address, or block device initialization. 
+
+clb_fs_size= - size for tmpfs. Default - 2G.
+
+clb_use_iface= - use specific network interface for boot.
+
+clb_force_cache_images= - if set to 0, disable caching in memory layers images,
+accessible from local media (file:/// scheme in layer's URI). Default: 1.
+
+clb_load_modules= - comma separated list of kernel modules, required to be
+loaded. If some modules provided in separate initramfs image, we can't load them
+via standard make-initrd ways (like MODULES_PRELOAD).
+
+
+
+Supported macroses in .manifest file or root= boot parameter:
+{inherit} - only for .manifest file. Expanded into 'dirname'-part of the root='s URI
+
+{DHCP_*} - any DHCP variable which you can find in a dump file, making by dhcpcd -U.
+Examples: {DHCP_dhcp_server_identifier}, {DHCP_ip_address}
+

@@ -7,6 +7,7 @@ Release: alt1
 Summary: CoLaBoot feature for make-initrd
 License: GPL
 Group: System/Base
+Packager: Michael A. Kangin <prividen@altlinux.org>
 
 Source0: %name-%version.tar
 
@@ -35,6 +36,7 @@ cp colaboot.mk.example %buildroot%_sysconfdir/initrd.mk.d/
 %files 
 %_datadir/make-initrd/features/colaboot
 %config(noreplace) %_sysconfdir/initrd.mk.d/colaboot.mk.example
+%doc docs/*
 
 %changelog
 * Tue Mar 13 2018 Michael A. Kangin <prividen@altlinux.org> 0.5-alt1
