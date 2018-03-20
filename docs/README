@@ -36,6 +36,7 @@ clb_load_modules= - comma separated list of kernel modules, required to be
 loaded. If some modules provided in separate initramfs image, we can't load them
 via standard make-initrd ways (like MODULES_PRELOAD).
 
+curlopts= - any options for curl.
 
 
 Supported macroses in .manifest file or root= boot parameter:
