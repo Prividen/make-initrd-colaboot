@@ -2,7 +2,7 @@
 
 Name: make-initrd-colaboot
 Version: 0.5
-Release: alt1
+Release: alt2
 
 Summary: CoLaBoot feature for make-initrd
 License: GPL
@@ -40,6 +40,9 @@ cp colaboot.mk.example %buildroot%_sysconfdir/initrd.mk.d/
 %doc docs/*
 
 %changelog
+* Tue Mar 20 2018 Michael A. Kangin <prividen@altlinux.org> 0.5-alt2
+- Homepage URL
+
 * Tue Mar 13 2018 Michael A. Kangin <prividen@altlinux.org> 0.5-alt1
 - Initial build
 
