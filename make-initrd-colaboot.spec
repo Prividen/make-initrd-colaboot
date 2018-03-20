@@ -9,6 +9,7 @@ License: GPL
 Group: System/Base
 Packager: Michael A. Kangin <prividen@altlinux.org>
 
+Url: https://www.altlinux.org/Colaboot
 Source0: %name-%version.tar
 
 Requires: make-initrd >= 0.7.6-alt1
