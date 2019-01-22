@@ -1,5 +1,5 @@
 VERBOSE=1
 AUTODETECT = common
-FEATURES += add-modules colaboot compress cleanup
+FEATURES = colaboot compress cleanup
 
 IMAGE_SUFFIX = -colaboot
