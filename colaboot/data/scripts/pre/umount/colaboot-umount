@@ -1,0 +1,16 @@
+#!/bin/sh -e
+
+. /scripts/functions
+
+# Unmount our tmpfs and all other mountpoints in lazy mode
+RDISK=/tmp/clb-ramdisk
+IMG_FS_PATH=/tmp/images-fs
+
+debug "CoLaBoot: umount CLB ramdisk $RDISK"
+umount -l $RDISK
+
+for MPOINT in $IMG_FS_PATH/*; do
+	debug "CoLaBoot: umount image mount point $MPOINT"
+	grep -q " $MPOINT " /proc/mounts && umount -l $MPOINT
+done
+

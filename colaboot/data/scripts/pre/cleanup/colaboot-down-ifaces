@@ -1,0 +1,10 @@
+#!/bin/sh -e
+
+. /scripts/functions
+
+ls /sys/class/net | while read i; do
+	[ "$i" = "lo" ] && continue
+	verbose "CoLaBoot: down interface $i"
+	ip link set "$i" down
+done
+

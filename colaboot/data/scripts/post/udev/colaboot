@@ -29,6 +29,9 @@ expand_macro() {
 			[ -z "$NETWORK_IS_UP" ] && network_init >&2
 			DHCP_OPT_NAME=$(echo $MACRO_NAME |sed -e 's/^DHCP_//')
 			REPLACEMENT=$(get_mnf_param $DHCP_OPT_NAME /tmp/lease-info |sed -e "s/'//g")
+		elif echo $MACRO_NAME |grep -q "^BOOTOPT_"; then
+			MACRO_BP_NAME=$(echo $MACRO_NAME | sed -e 's/^BP_//')
+			REPLACEMENT=$(eval echo \$clb_macro_$MACRO_BP_NAME)
 		fi
 		STR=$(echo $STR |sed -e "s|{.*}|$REPLACEMENT|")
 	fi
@@ -60,11 +63,10 @@ set_image_location() {
 		CURRENT_IMAGE_LOCATION=$URI
 	fi
 
-
 	if [ $IMAGE_AVAILABLE_LOCALLY -eq 1 -a $FORCE_CACHE_IMAGES -eq 0 ]; then
 		# layer images will be mounted directly from their location
 		CACHE_IMAGE=0
-		IMAGES_PATH=$CURRENT_IMAGE_FS
+		IMAGES_PATH=$(echo $CURRENT_IMAGE_LOCATION |sed -r -e "s|.*$CURRENT_IMAGE_FS|$CURRENT_IMAGE_FS|" -e 's|(.*)/.*|\1|')
 	else
 		# layer images will be downloaded first
 		CACHE_IMAGE=1
@@ -73,20 +75,32 @@ set_image_location() {
 }
 
 mount_img_fs() {
-	local IMG_DEV="/dev/$1"
-	IMG_MPOINT="${IMG_FS_PATH}/$1"
+	if echo $1 | grep -q '='; then
+		MOUNT_DEV="$1"
+		SEARCH_DEV="-t $1"
+	else
+		MOUNT_DEV="/dev/$1"
+		SEARCH_DEV="$MOUNT_DEV"
+	fi
+
+	if [ -n "$2" ]; then
+		IMG_MPOINT=$2
+	else
+		IMG_MPOINT="${IMG_FS_PATH}/$1"
+	fi
 
 	if [ ! -d "$IMG_MPOINT" ]; then
 		try=0
 		while [ "$try" -lt $((${WAIT_DELAY}*10)) ]; do
 			try=$(($try+1))
-			[ -r $IMG_DEV ] && break
-			debug "Waiting for device ${IMG_DEV}... $try"
+			blkid $SEARCH_DEV >/dev/null && break
+			echo $try |grep -q '0$' && debug "Waiting for device ${MOUNT_DEV}... $try"
 			sleep .1
 		done
-		[ -r ${IMG_DEV} ] || error "Can't locate images device ${IMG_DEV}"
-		mkdir -p $IMG_MPOINT
-		mount ${IMG_DEV} $IMG_MPOINT || error "Can't mount images filesystem on ${IMG_DEV}"
+		blkid $SEARCH_DEV >/dev/null || error "Can't locate images device ${MOUNT_DEV}"
+		mkdir -p "$IMG_MPOINT"
+		mount -o ro "${MOUNT_DEV}" "$IMG_MPOINT" || error "Can't mount images filesystem on ${MOUNT_DEV}"
+#		mount -o noatime,commit=1 "${MOUNT_DEV}" "$IMG_MPOINT" || error "Can't mount images filesystem on ${MOUNT_DEV}"
 	fi
 }
 
@@ -139,6 +153,36 @@ network_init() {
 		return
 	fi
 
+	if [ -n "$clb_ip" ]; then
+		# clb_ip as following: eth_name:ip/cidr:gw:ns
+		# e.g. clb_ip=eth0:10.0.0.1/24:10.0.0.254:8.8.8.8
+		message "CoLaBoot: configure network with static IP"
+		CLB_ETH=$(echo $clb_ip |sed -r -e 's/:.*//')
+		CLB_IP=$(echo $clb_ip |sed -r -e 's/([^:]*:){1}//' -e 's/:.*//')
+		CLB_GW=$(echo $clb_ip |sed -r -e 's/([^:]*:){2}//' -e 's/:.*//')
+		CLB_NS=$(echo $clb_ip |sed -r -e 's/([^:]*:){3}//' -e 's/:.*//')
+
+		try=0
+		while [ "$try" -lt $((${WAIT_DELAY} * 10)) ]; do
+			try=$(($try+1))
+			debug "attempt #$try"
+			[ -e /sys/class/net/$CLB_ETH ] && break
+
+			debug "Network interface $CLB_ETH not found, still wait for..."
+			sleep .1
+		done
+
+		[ -e /sys/class/net/$CLB_ETH ] || shell "Network interface $CLB_ETH not found"
+
+		ip li set $CLB_ETH up
+		ip addr add $CLB_IP dev $CLB_ETH
+		ip route add default via $CLB_GW
+		echo "nameserver $CLB_NS" >>/etc/resolv.conf
+		NETWORK_IS_UP=1
+		echo "$CLB_IP dev $CLB_ETH" > /tmp/lease-info
+		return
+	fi
+
 	mkdir -p /var/lib/dhcpcd
 
 	try=0
@@ -179,6 +223,7 @@ network_init() {
 			else
 				message "Aquire IP address on $i:"
 				dhcpcd -p -w -t 30 "$i"
+				[ -n "$(ip -o -4 addr show dev $i)" ] && break
 			fi
 		done
 		verbose "Hope to find assigned address, looking..."
@@ -199,18 +244,6 @@ network_init() {
 		error "No assigned IP found. Network problem?"
 	fi
 }
-
-network_down() {
-	ls /sys/class/net | while read i; do
-		[ "$i" = "lo" ] && continue
-		ip -o link show dev $i |grep -q ",UP" || continue
-		message "CoLaBoot: downing interface $i"
-		ipaddr="$(ip addr list "$i" | sed -n 's,^[[:space:]]\+inet[[:space:]]\+\([.0-9]\+/[0-9]\+\).*,\1,p')"
-		ip addr del "${ipaddr}" dev "$i"
-		ip link set "$i" down
-	done
-}
-
 
 
 prepare() {
@@ -294,6 +327,11 @@ get_root_images() {
 				OPTIONAL=1
 			fi
 
+			if echo $L_URI | grep -q '^PERM_RW:' ; then
+				L_URI=$(echo $L_URI | sed -e 's/^PERM_RW://')
+				continue
+			fi
+
 			L_URI=$(expand_macro $L_URI)
 			L_COUNT=$(($L_COUNT + 1))
 			LAYER="$(basename $L_URI)"
@@ -316,6 +354,9 @@ get_root_images() {
 				mount -t squashfs ${IMAGES_MPOINTS}/${CUR_L} ${IMAGES_MPOINTS}/.${CUR_L}
 			fi
 		done 
+		if [ -z "$clb_perm_rw" ]; then
+			clb_perm_rw=$(expand_macro $(get_mnf_param PERM_RW $MNF))
+		fi
 	else
 		# there single rootfs image in ROOT= parameter.
 		message "CoLaBoot: fetching root image from '$CURRENT_IMAGE_LOCATION'"
@@ -329,28 +370,55 @@ get_root_images() {
 
 
 mount_root_fs() {
-	# create overlayfs' RW (UpperDir) and .work directories on tmpfs
-	OVRL_RW_DIR=${RW_LAYER_PATH}/.rw
-	OVRL_WORK_DIR=${RW_LAYER_PATH}/.work
-	mkdir -p $OVRL_RW_DIR $OVRL_WORK_DIR
+	if modprobe overlay 2>/dev/null; then
+		mkdir -p $RW_LAYER_PATH
 
-	# get chain of all LowerDirs
-	LOWER_DIRS=$(ls -dr ${IMAGES_MPOINTS}/.layer* |while read L; do echo -n ${L}: ; done |sed -e 's/:$//')
-	MNT_CMD="mount -t overlay overlay -o lowerdir=${LOWER_DIRS},upperdir=${OVRL_RW_DIR},workdir=${OVRL_WORK_DIR} /root"
-	message "CoLaBoot: Mounting /root filesystem"
-	debug "with a command: $MNT_CMD"
-	$MNT_CMD || shell "Error mount /root filesystem"
-}
+		if [ -n "$clb_perm_rw" -a ! "$clb_stateless" = "1" ] ; then
+			RW_LAYER_PATH="$RW_LAYER_PATH/permanent_upperdir"
 
-cleanup() {
-	# Unmount our tmpfs and all other mountpoints in lazy mode
-	umount -l $RDISK
+			if [ "$clb_perm_rw" = $(basename "$clb_perm_rw") ]; then
+				clb_perm_rw="${BASE}/${clb_perm_rw}"
+			fi
 
-	for MPOINT in $IMG_FS_PATH/*; do
-		grep -q " $MPOINT " /proc/mounts && umount -l $MPOINT
-	done
+			if echo $clb_perm_rw | grep -q "^dev:"; then
+				PERM_RW_DEV=$(echo $clb_perm_rw |sed -e 's|.*:///||' -e 's|/.*||')
+				mount_img_fs $PERM_RW_DEV $RW_LAYER_PATH
+				mount -o remount,rw,noatime,commit=1 $RW_LAYER_PATH || shell "Can't remount permament rw device"
+			elif echo $clb_perm_rw | grep -q "^file:"; then
+				mkdir -p $RW_LAYER_PATH
+				set_image_location "$clb_perm_rw"
+				clb_perm_rw=$(basename $clb_perm_rw)
+				PERM_RW_IMG=$CURRENT_IMAGE_FS/$clb_perm_rw
+				mount -o remount,rw,noatime,commit=1 $CURRENT_IMAGE_FS || shell "Can't remount filesystem with permanent rw image"
+				if [ -e $PERM_RW_IMG ]; then
+					mount -o noatime,commit=1 $PERM_RW_IMG $RW_LAYER_PATH || shell "Error mount permanent rw image"
+				else
+					error "Warning: no permanent rw image $PERM_RW_IMG found. Will be used tmpfs."
+				fi
+			fi
+		fi
 
-	[ -n "$NETWORK_IS_UP" -o -s /tmp/lease-info ] && network_down
+		# create overlayfs' RW (UpperDir) and .work directories on RW_LAYER_PATH, if needed
+		OVRL_RW_DIR=${RW_LAYER_PATH}/.rw
+		OVRL_WORK_DIR=${RW_LAYER_PATH}/.work
+
+		[ -d $OVRL_RW_DIR ] || mkdir -p $OVRL_RW_DIR
+		[ -d $OVRL_WORK_DIR ] || mkdir -p $OVRL_WORK_DIR
+
+		# get chain of all LowerDirs
+		LOWER_DIRS=$(ls -dr ${IMAGES_MPOINTS}/.layer* |while read L; do echo -n ${L}: ; done |sed -e 's/:$//')
+		MNT_CMD="mount -t overlay overlay -o noatime,sync,lowerdir=${LOWER_DIRS},upperdir=${OVRL_RW_DIR},workdir=${OVRL_WORK_DIR} /root"
+		message "CoLaBoot: Mounting /root filesystem"
+		debug "with a command: $MNT_CMD"
+		$MNT_CMD || shell "Error mount /root filesystem"
+	else
+		message "CoLaBoot: No overlay module found, fallback to tmpfs..."
+		mount -t tmpfs -o mode=0755,size="$clb_fs_size" tmpfs /root
+		ls -d ${IMAGES_MPOINTS}/.layer* |while read L; do
+			message "Copy files for layer $L..."
+			/bin/cp -aT $L/ /root/
+		done
+	fi
 }
 
 # =========< start here >=============
@@ -360,4 +428,3 @@ prepare
 get_root_images
 mount_root_fs
 
-cleanup

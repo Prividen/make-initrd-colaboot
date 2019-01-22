@@ -1,0 +1,19 @@
+#!/bin/sh -e
+
+. /scripts/functions
+
+LEASE_DIR=/var/lib/dhcpcd
+if [ -d $LEASE_DIR ]; then
+	for dhcp_lease in $LEASE_DIR/*.lease; do
+		IFACE_NAME=$(basename $dhcp_lease | sed -r -e 's/^dhcpcd-(.*)\.lease/\1/')
+		verbose "CoLaBoot: try to kill dhcpcd for interface $IFACE_NAME"
+		dhcpcd -k $IFACE_NAME
+	done
+fi
+
+if [ -n "$clb_ip" ]; then
+	if grep -q '^[0-9].* dev ' /tmp/lease-info; then
+		/sbin/ip addr del $(sed -n -e "1p" /tmp/lease-info)
+	fi
+fi
+
