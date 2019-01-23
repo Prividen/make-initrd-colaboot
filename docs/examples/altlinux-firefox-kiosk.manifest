@@ -1,11 +1,11 @@
-# will add this path to any not-full URI
+# will add this path to any non-full URI
 BASE=http://fileserver/clb
 
 # inherit path from root= parameter (not from BASE=)
 LAYER={inherit}/altlinux-p8-clb-base.squashfs
 
-# individual layer's location
-LAYER=ftp://192.168.1.1/colaboot/all_modules-4.14.16-un-def-alt0.M80P.1.squashfs
+# individual layer's location, using macro for clb_macro_kernelver boot parameter
+LAYER=ftp://192.168.1.1/colaboot/all_modules-{BOOTOPT_kernelver}.squashfs
 
 # not full URI, BASE= value will be added
 LAYER=altlinux-p8-clb-network.squashfs

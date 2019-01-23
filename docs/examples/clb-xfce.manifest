@@ -12,3 +12,7 @@ LAYER=altlinux-p8-clb-network.squashfs
 LAYER=altlinux-p8-clb-xorg.squashfs
 LAYER=altlinux-p8-clb-lightdm.squashfs
 LAYER=altlinux-p8-clb-xfce.squashfs
+
+# this is permanent RW layer
+PERM_RW=dev:///sda
+

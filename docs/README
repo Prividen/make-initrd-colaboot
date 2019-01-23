@@ -1,47 +1,139 @@
-CoLaBoot (Compressed Layers Boot) is a boot system that allow you to mount root
-FS as OverlayFS from a separate layers, each of them is compressed squashfs image.
-
-Layers can be aquired from network (HTTP(S)/FTP/TFTP/... any proto supported by
-curl(1)), or from local filesystems (ISO/HDD). 
-
-Multiple layer's locations supported, some of the layers may be optional for boot.
-Layers placed on the local filesystems may be mounted directly, to avoid caching in
-memory.
-
-Kernel modules, required for boot (e.g. network modules) may be added to initrd
-or provided as a separate initramfs image. All other modules may be provided as
-one of the layers.
-
-List of layers, arranged by boot order, with a some optional parameters described
-in a text .manifest file (see examples).
+CoLaBoot (Compressed Layers Boot, CLB) is a boot system that mount rootfs as
+OverlayFS from separate layers, each of them is a compressed squashfs image.
 
 
+LAYERS
+------------------------------------------
+Layers can be aquired from network (HTTP(S)/FTP/TFTP/... any proto supported
+by curl(1)), or from local filesystems (ISO/HDD). 
 
-Supported boot parameters:
-root= - location of .manifest file, OR the only layer to boot. Examples:
-	http://my.boot.server/path/my.manifest
-	file:///sr0/isolinux/rootfs.squashfs
+Multiple layer's locations are supported, and some of the layers may be
+optional for boot.  Layers, which are placed on a local filesystems, can be
+mounted directly, to avoid caching in memory.
 
-rootdelay= - maximum delay in seconds for many wait actions, such as wait for network
-address, or block device initialization. 
-
-clb_fs_size= - size for tmpfs. Default - 2G.
-
-clb_use_iface= - use specific network interface for boot.
-
-clb_force_cache_images= - if set to 0, disable caching in memory layers images,
-accessible from local media (file:/// scheme in layer's URI). Default: 1.
-
-clb_load_modules= - comma separated list of kernel modules, required to be
-loaded. If some modules provided in separate initramfs image, we can't load them
-via standard make-initrd ways (like MODULES_PRELOAD).
-
-curlopts= - any options for curl.
+All layers URIs, arranged by boot order, probably with some optional
+parameters as well, should be listed in a text .manifest file, which URI
+provided as the root= boot parameter.
 
 
-Supported macroses in .manifest file or root= boot parameter:
-{inherit} - only for .manifest file. Expanded into 'dirname'-part of the root='s URI
+MODULES
+-----------------------------------------
+CLB initrd image is designed to work with different kernels, so itself it
+doesn't contain any modules at all. 
 
-{DHCP_*} - any DHCP variable which you can find in a dump file, making by dhcpcd -U.
-Examples: {DHCP_dhcp_server_identifier}, {DHCP_ip_address}
+Kernel modules, required for boot, must be provided as a separate initramfs
+image. These boot modules can be a drivers for network cards, disk devices,
+file systems, etc.
+
+Also this initramfs must contain modules, required by CLB itself: 
+- squashfs,
+- overlay, 
+- af_packet (for dhcp client), 
+- loop (if not compiled in kernel)
+
+If there is no overlay module available for your kernel, CLB will just copy
+content of SquashFS layers to tmpfs - the same effect, but increased memory
+usage.
+
+There are multiple module initramfs images can be used, e.g. you can temporary
+provide a separate image with video modules for convenient debug environment.
+If you need to have just one initrd blob, all used images can be concatenated
+together (and may be with microcode image as well).
+
+Any other modules for your system should be provided as a SquashFS layer(s),
+or be embedded into the only layer that you have.
+
+
+PERMANENT R/W LAYERS
+-----------------------------------------
+Normally CLB placed RW overlay layer in memory, but if you need to preserve
+changes over reboot and have a permanent RW layer, it can be mounted from file
+container ('file:' prefix, default, may be omitted), or as a file system on
+the local disk device ('dev:' prefix).
+
+Permanent RW layer can be specified in .manifest file:
+PERM_RW=dev:///LABEL=my-filesystem
+or as a boot parameter: clb_perm_rw=dev:///LABEL=my-filesystem
+
+To use file container, create EXT4 image with appropriate size, put it on
+local filesystem, and specify it's URI (absolute or relative to BASE) in
+.manifest or as boot parameter (e.g.: clb_perm_rw=perm-rw.img).
+
+To disable permanent RW layer temporary (without modify your .manifest), set
+clb_stateless=1 boot parameter.
+
+
+BOOT PARAMETERS
+-----------------------------------------
+root - URI of the .manifest file, OR of the only layer to boot. Examples:
+root=http://my.boot.server/path/my.manifest
+root=file:///sr0/isolinux/rootfs.squashfs
+root=file:///LABEL=clb-iso/my.manifest
+
+rootdelay - maximum delay in seconds for many wait actions, such as wait for
+network address, or block device initialization. 
+
+curlopts - any options for curl.
+
+clb_fs_size - size for tmpfs. Default - 2G.
+
+clb_use_iface - use specific network interface to boot.
+
+clb_force_cache_images - if set to 0, will disable caching in memory of layers
+images, accessible from local media (file:/// scheme in layer's URI).
+
+clb_load_modules - comma separated list of kernel modules, required to be
+loaded (we can't load modules, provided in separate initramfs images, via
+standard make-initrd ways (like MODULES_PRELOAD))
+
+clb_ip - static IP configuration as following: ifname:ip/prefix:gw:ns.
+Example: clb_ip=eth0:10.0.0.12/24:10.0.0.1:8.8.8.8
+Prefix can be network mask as well.
+
+clb_perm_rw - permanent RW layer URI (see PERMANENT R/W LAYERS section)
+
+clb_stateless - disable permanent RW layer (the only value is 1)
+
+clb_macro_* - value for corresponding {BOOTOPT_*} macro.
+
+
+MANIFEST OPTIONS
+-----------------------------------------
+BASE - the base path for all non-absolute URIs in this manifest.
+
+LAYER - the squashfs layer URI. Can be absolute or relative to BASE. Multiple
+locations is supported. If URI has 'OPTIONAL:' prefix, this layer considered
+as optional - boot will be continued even if this layer is not available.
+
+PERM_RW - URI of permanent RW layer (see PERMANENT R/W LAYERS section)
+
+FORCE_CACHE_IMAGES - like a similar boot parameter, if set to 0, will disable
+caching of layer images.
+
+
+Also there are number of macros supported in .manifest file or for root=
+boot parameter value. Macros are specified in curly brackets:
+
+{inherit} - only for .manifest file. Expanded into 'dirname'-part of the
+root's URI
+
+{DHCP_*} - any DHCP variable which you can find in a dump file, making by
+dhcpcd -U.  Examples: {DHCP_dhcp_server_identifier}, {DHCP_ip_address}
+
+{BOOTOPT_*} - take value of corresponding clb_macro_* boot parameter. E.g.,
+if you have a number of layers with modules for a different kernels, you can
+specify in manifest file: LAYER=kernel-modules-{BOOTOPT_kernelver}.squashfs,
+and boot your system with clb_macro_kernelver=3.10.0-862.14.4.el7.x86_64 boot
+parameter.
+
+
+BUILD YOUR INITRD WITH COLABOOT
+-----------------------------------------
+You can edit the sample config /etc/initrd.mk.d/colaboot.mk.example to fit your
+requirements, and then run make-initrd: 
+# make-initrd -c /etc/initrd.mk.d/colaboot.mk.example
+
+Despite the fact you can see a kernel version in resulting initrd name, this image
+contain no any kernel modules, which must be provided as a separate
+initramfs image (please see 'MODULES' section).
 
