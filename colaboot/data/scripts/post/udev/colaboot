@@ -327,11 +327,6 @@ get_root_images() {
 				OPTIONAL=1
 			fi
 
-			if echo $L_URI | grep -q '^PERM_RW:' ; then
-				L_URI=$(echo $L_URI | sed -e 's/^PERM_RW://')
-				continue
-			fi
-
 			L_URI=$(expand_macro $L_URI)
 			L_COUNT=$(($L_COUNT + 1))
 			LAYER="$(basename $L_URI)"
