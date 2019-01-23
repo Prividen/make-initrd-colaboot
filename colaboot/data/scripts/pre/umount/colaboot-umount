@@ -3,8 +3,8 @@
 . /scripts/functions
 
 # Unmount our tmpfs and all other mountpoints in lazy mode
-RDISK=/tmp/clb-ramdisk
-IMG_FS_PATH=/tmp/images-fs
+RDISK=/run/clb/clb-ramdisk
+IMG_FS_PATH=/run/clb/images-fs
 
 debug "CoLaBoot: umount CLB ramdisk $RDISK"
 umount -l $RDISK

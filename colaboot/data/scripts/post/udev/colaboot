@@ -28,7 +28,7 @@ expand_macro() {
 			# for this macro type we need to make sure first that network is up
 			[ -z "$NETWORK_IS_UP" ] && network_init >&2
 			DHCP_OPT_NAME=$(echo $MACRO_NAME |sed -e 's/^DHCP_//')
-			REPLACEMENT=$(get_mnf_param $DHCP_OPT_NAME /tmp/lease-info |sed -e "s/'//g")
+			REPLACEMENT=$(get_mnf_param $DHCP_OPT_NAME /run/clb/lease-info |sed -e "s/'//g")
 		elif echo $MACRO_NAME |grep -q "^BOOTOPT_"; then
 			MACRO_BP_NAME=$(echo $MACRO_NAME | sed -e 's/^BP_//')
 			REPLACEMENT=$(eval echo \$clb_macro_$MACRO_BP_NAME)
@@ -147,7 +147,7 @@ prepare_resolver_chroot() {
 
 
 network_init() {
-	if [ -s /tmp/lease-info ]; then
+	if [ -s /run/clb/lease-info ]; then
 		# It seems network is already up
 		NETWORK_IS_UP=1
 		return
@@ -179,7 +179,7 @@ network_init() {
 		ip route add default via $CLB_GW
 		echo "nameserver $CLB_NS" >>/etc/resolv.conf
 		NETWORK_IS_UP=1
-		echo "$CLB_IP dev $CLB_ETH" > /tmp/lease-info
+		echo "$CLB_IP dev $CLB_ETH" > /run/clb/lease-info
 		return
 	fi
 
@@ -234,10 +234,10 @@ network_init() {
 	done
 
 	if ip -o -4 addr list |grep -Fqv "inet 127.0.0.1"; then 
-		verbose "Save lease info into /tmp/lease-info"
+		verbose "Save lease info into /run/clb/lease-info"
 		for lease in /var/lib/dhcpcd/*.lease; do
 			iface=$(basename $lease |sed -e 's/dhcpcd-//' -e 's/\.lease$//')
-			dhcpcd -4 -U $iface > /tmp/lease-info
+			dhcpcd -4 -U $iface > /run/clb/lease-info
 		done
 		NETWORK_IS_UP=1
 	else
@@ -261,10 +261,10 @@ prepare() {
 
 	verbose "CoLaBoot: root url=${ROOT}, clb_fs_size=${clb_fs_size}, clb_force_cache_images=${FORCE_CACHE_IMAGES}"
 
-	RDISK=/tmp/clb-ramdisk
+	RDISK=/run/clb/clb-ramdisk
 	CACHED_IMAGES=$RDISK/cached-images
 	IMAGES_MPOINTS=$RDISK/mount-points
-	IMG_FS_PATH=/tmp/images-fs
+	IMG_FS_PATH=/run/clb/images-fs
 
 	# this location can be overrided for local HDD, NFS or iSCSI
 	RW_LAYER_PATH=$IMAGES_MPOINTS

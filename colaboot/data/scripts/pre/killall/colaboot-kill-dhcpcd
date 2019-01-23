@@ -12,8 +12,8 @@ if [ -d $LEASE_DIR ]; then
 fi
 
 if [ -n "$clb_ip" ]; then
-	if grep -q '^[0-9].* dev ' /tmp/lease-info; then
-		/sbin/ip addr del $(sed -n -e "1p" /tmp/lease-info)
+	if grep -q '^[0-9].* dev ' /run/clb/lease-info; then
+		/sbin/ip addr del $(sed -n -e "1p" /run/clb/lease-info)
 	fi
 fi
 
