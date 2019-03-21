@@ -401,7 +401,9 @@ mount_root_fs() {
 		[ -d $OVRL_WORK_DIR ] || mkdir -p $OVRL_WORK_DIR
 
 		# get chain of all LowerDirs
-		LOWER_DIRS=$(ls -dr ${IMAGES_MPOINTS}/.layer* |while read L; do echo -n ${L}: ; done |sed -e 's/:$//')
+		# Each mpoint looks like '/run/clb/clb-ramdisk/mount-points/.layerN
+		# so we wait for numbers to sort in 41 position.
+		LOWER_DIRS=$(ls -d ${IMAGES_MPOINTS}/.layer* |sort -nrk 1.41 |while read L; do echo -n ${L}: ; done |sed -e 's/:$//')
 		MNT_CMD="mount -t overlay overlay -o noatime,sync,lowerdir=${LOWER_DIRS},upperdir=${OVRL_RW_DIR},workdir=${OVRL_WORK_DIR} /root"
 		message "CoLaBoot: Mounting /root filesystem"
 		debug "with a command: $MNT_CMD"
@@ -409,7 +411,7 @@ mount_root_fs() {
 	else
 		message "CoLaBoot: No overlay module found, fallback to tmpfs..."
 		mount -t tmpfs -o mode=0755,size="$clb_fs_size" tmpfs /root
-		ls -d ${IMAGES_MPOINTS}/.layer* |while read L; do
+		ls -d ${IMAGES_MPOINTS}/.layer* | sort -nk 1.41 |while read L; do
 			message "Copy files for layer $L..."
 			/bin/cp -aT $L/ /root/
 		done
