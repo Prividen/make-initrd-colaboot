@@ -15,5 +15,6 @@ COLABOOT_FILES  	 = \
 	/bin/basename \
 	/bin/sort \
 	/usr/bin/seq \
+	/usr/bin/md5sum \
 	#
 

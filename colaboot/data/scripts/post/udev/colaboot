@@ -108,6 +108,7 @@ mount_img_fs() {
 get_image() {
 	# $1 - URI of image to download;
 	# $2 - where to save it (or image already should be in this location if we'll just mount it)
+	# $3 - optional MD5
 	if [ $CACHE_IMAGE -eq 1 ]; then
 		curl -f $curlopts "$1" -o "$2"
 		if ! [ $? -eq 0 -a -f "$2" ]; then
@@ -124,6 +125,14 @@ get_image() {
 			else
 				error "Warning: no optional image found at $2"
 			fi
+		fi
+	fi
+
+	if [ -n "$3" -a -f $2 ]; then
+		local md5="$(md5sum $2 | sed -e 's/ .*//')"
+		if [ "$md5" != "$3" ]; then
+			error "Image $2 MD5 mismatch, expected: $3, got: $md5"
+			exit 1
 		fi
 	fi
 }
@@ -298,7 +307,7 @@ get_root_images() {
 	if echo "$ROOT" | grep -q '\.manifest'; then
 		MNF="${IMAGES_PATH}/$(basename $ROOT)"
 		message "CoLaBoot: fetching manifest from '$CURRENT_IMAGE_LOCATION'"
-		get_image "$CURRENT_IMAGE_LOCATION" "$MNF"
+		get_image "$CURRENT_IMAGE_LOCATION" "$MNF" "$clb_root_md5"
 
 		# Looking for BASE= parameter in manifest. If set, it contain default path for all other layers.
 		BASE=$(get_mnf_param BASE $MNF |sed -e 's|/$||')
@@ -317,6 +326,8 @@ get_root_images() {
 		# get all LAYER= parameters from manifest
 		LAYERS=$(get_mnf_param LAYER $MNF)
 		for L_URI in $LAYERS; do
+			L_COUNT=$(($L_COUNT + 1))
+
 			# Normally if we can't load/mount some layer image, boot process will stop with error.
 			# But there are may be a special magic prefix "OPTIONAL:" before layer's name/URI.
 			# Absence of OPTIONAL image will be ignored with a warning, and root FS will be mounted
@@ -327,8 +338,13 @@ get_root_images() {
 				OPTIONAL=1
 			fi
 
+			MD5=
+			if echo $L_URI | grep -Eiq ',MD5=' ; then
+				MD5=$(echo $L_URI | sed -e 's/.*,MD5=//i' -e 's/,.*//')
+				L_URI=$(echo $L_URI | sed -r -e 's/,MD5=[0-9a-f]+//i')
+			fi
+
 			L_URI=$(expand_macro $L_URI)
-			L_COUNT=$(($L_COUNT + 1))
 			LAYER="$(basename $L_URI)"
 
 			# if LAYER= contain just image name (not full URI), then we'll add BASE= part to it.
@@ -339,23 +355,33 @@ get_root_images() {
 
 			LAYER="${IMAGES_PATH}/${LAYER}"
 
-			get_image "$CURRENT_IMAGE_LOCATION" "$LAYER"
+			get_image "$CURRENT_IMAGE_LOCATION" "$LAYER" "$MD5"
 
 			if [ -f $LAYER ]; then
 				# if layer's image exists after all, then make mountpoint and mount it.
 				CUR_L="layer${L_COUNT}"
 				ln -s $LAYER ${IMAGES_MPOINTS}/$CUR_L
 				mkdir ${IMAGES_MPOINTS}/.${CUR_L}
+				[ -n "$MD5" -a -z "$OPTIONAL" ] && echo $MD5 > ${IMAGES_MPOINTS}/${L_COUNT}.md5
 				mount -t squashfs ${IMAGES_MPOINTS}/${CUR_L} ${IMAGES_MPOINTS}/.${CUR_L}
 			fi
 		done 
+
+		if [ -n "$clb_overall_md5" ]; then
+			local md5="$(cat $(ls ${IMAGES_MPOINTS}/*.md5 |sort -nk 1.35) |md5sum |sed -e 's/ .*//')"
+			if [ "$clb_overall_md5" != "$md5" ]; then
+				error "Images overall MD5 mismatch, expected: $clb_overall_md5, got: $md5"
+				exit 1
+			fi
+		fi
+
 		if [ -z "$clb_perm_rw" ]; then
 			clb_perm_rw=$(expand_macro $(get_mnf_param PERM_RW $MNF))
 		fi
 	else
 		# there single rootfs image in ROOT= parameter.
 		message "CoLaBoot: fetching root image from '$CURRENT_IMAGE_LOCATION'"
-		get_image "$CURRENT_IMAGE_LOCATION" "${IMAGES_PATH}/$(basename $ROOT)"
+		get_image "$CURRENT_IMAGE_LOCATION" "${IMAGES_PATH}/$(basename $ROOT)" "$ROOT_MD5"
 
 		ln -s ${IMAGES_PATH}/$(basename $ROOT) ${IMAGES_MPOINTS}/layer1
 		mkdir ${IMAGES_MPOINTS}/.layer1

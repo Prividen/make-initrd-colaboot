@@ -96,6 +96,11 @@ clb_stateless - disable permanent RW layer (the only value is 1)
 
 clb_macro_* - value for corresponding {BOOTOPT_*} macro.
 
+clb_root_md5 - MD5 hash of root= image, manifest or the only squashfs.
+
+clb_overall_md5 - overall MD5 hash of all layer's hashes, where it specified, except
+optional ones.
+
 
 MANIFEST OPTIONS
 -----------------------------------------
@@ -104,6 +109,8 @@ BASE - the base path for all non-absolute URIs in this manifest.
 LAYER - the squashfs layer URI. Can be absolute or relative to BASE. Multiple
 locations is supported. If URI has 'OPTIONAL:' prefix, this layer considered
 as optional - boot will be continued even if this layer is not available.
+For each layer there are MD5 hash can be specified, in the following form:
+LAYER=file.squashfs,MD5=42ea883e49be6f52838287f2f8fe3271
 
 PERM_RW - URI of permanent RW layer (see PERMANENT R/W LAYERS section)
 
